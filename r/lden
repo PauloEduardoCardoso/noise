@@ -1,0 +1,110 @@
+#' Calculo do Ruido Lden
+#' Conversao dos shapefiles para raster com resolucao de ~ 10m
+#' Deve ser corrigida a topologia dos vetores do WINDPRO (Manifold GIS)
+#' Atencao ao nome das layers shapefile. Vai exportar com o mesmo nome da shp
+#' Paulo Cardoso 05/2014
+
+#' Packages necessarios
+kpacks <- c('raster', 'sp', 'rgdal', 'maptools')
+new.packs <- kpacks[!(kpacks %in% installed.packages()[,"Package"])]
+if(length(new.packs)) install.packages(new.packs)
+lapply(kpacks, require, character.only=T)
+
+# Ruido Lden
+# Formula lden:
+## 10 * log10(
+##  (1/24)*(
+##    (13  * (10^( ld.r / 10))) +
+##      (3 * (10^((len.r + 5) / 10))) +
+##      (8 * (10^((ln.r + 10) / 10)))
+##  ))
+
+#' IMPORTANTE !!
+##' Correcao Topologica dos Shapefiles do WindPRO.
+##' Correr Normalize Topology de cada shapefile no Manifold GIS
+##' Retirar eventuais espacos dos nomes das shapefiles
+##' Nomear as shapefiles ao exportar como diurno.shp, entardecer.shp e noturno.shp.
+
+#' Definir Working directory
+wddata <- 'D:/Programacao/R/Ruido/shp'
+# Projecao UTM 29N WGS84
+crs.r <- CRS('+init=epsg:27493') # HGaussDt73
+crs.n <- CRS('+init=epsg:20790') # HGaussIgeoE
+
+crs.r <- CRS('+init=epsg:32629') # UTM29N
+
+
+#' Funcao para gerar stack com Ld, Len, Ln e Lden
+f.RLden <- function(x=x, writeraster = F
+                    , proj.n = crs.n
+                    ){
+  # Leitura dos ficheiros shapefile do Manifold (corrigidos topologicamente)
+  i.allfiles <- list.files(file.path(wddata), all.files = F)
+  # List of TIF files at dir.fun folder
+  i.listshp <- grep(".shp$", i.allfiles, ignore.case = TRUE, value = TRUE) 
+  rstack <- stack()
+  for(i in i.listshp){
+    x <- readOGR(dsn = wddata, layer = substr(i, 1, (nchar(i)-4)))
+    sp::proj4string(x) <- crs.r # associa a proj
+    # Raster
+    # Expande a area em mais 1000m
+    i.ext <- extent(x) + 1000
+    i.r <- raster(i.ext,
+                  ncols = floor((i.ext@xmax - i.ext@xmin)/10),
+                  nrows = floor((i.ext@ymax - i.ext@ymin)/10),
+                  crs = crs.r)
+    # Ruido Diurno, Noturno e Entardecer
+    ld.r <- rasterize(x, i.r, field = 'NOISE')
+    ld.r@data@names <- substr(i, 1, (nchar(i)-4))
+    if(nlayers(rstack) == 0){
+      rstack <- addLayer(rstack, ld.r)} else{
+        if(compareRaster(ld.r, rstack, stopiffalse=FALSE)){
+          rstack <- addLayer(rstack, ld.r)} else{
+          ld.r <- resample(ld.r, rstack, method = 'ngb')
+          rstack <- addLayer(rstack, ld.r)
+        }
+      }
+  }
+  # Lden
+  lden.r <- 10 * log10(
+    (1/24) * (
+      (13 * (10^(rstack[[1]] / 10))) +
+        ( 3 * (10^((rstack[[2]] + 5) / 10))) +
+        ( 8 * (10^((rstack[[3]] + 10) / 10)))
+    )
+  )
+  lden.r@data@names <- 'lden'
+  rstack <- addLayer(rstack, lden.r)
+  if(!compareCRS(proj.n, crs(rstack))){
+    message(paste0('reprojetar rasters para projecao ', proj.n))
+    rstack <- projectRaster(rstack, crs=proj.n)
+  }
+  # Exportar
+  if (writeraster == T){
+    writeRaster(rstack[[1]], file.path(wddata, 'ldv_.tif'), NAflag = 0,
+                datatype='FLT4S', overwrite=TRUE, format="GTiff")
+    writeRaster(rstack[[2]], file.path(wddata, 'lenv_.tif'), NAflag = 0,
+                datatype='FLT4S', overwrite=TRUE, format="GTiff")
+    writeRaster(rstack[[3]], file.path(wddata, 'lnv_.tif'), NAflag = 0,
+                datatype='FLT4S', overwrite=TRUE, format="GTiff")
+    writeRaster(rstack[[4]], file.path(wddata, 'ldenv_.tif'), NAflag = 0,
+                datatype='FLT4S', overwrite=TRUE, format="GTiff")
+  }  
+  plot(rstack)
+  return(rstack)
+}
+
+rlden <- f.RLden(x=x, writeraster = T, proj.n = crs.n)
+
+# Plot: visualizacao
+plot(rlden)
+
+# Expotar Raster para geoTiff, formato Integer
+writeRaster(rlden[['diurno']], file.path(wddata, 'ldv2.tif'), NAflag = 0,
+            datatype='FLT4S', overwrite=TRUE, format="GTiff")
+writeRaster(rlden[['entardecer']], file.path(wddata, 'lenv2.tif'), NAflag = 0,
+            datatype='FLT4S', overwrite=TRUE, format="GTiff")
+writeRaster(rlden[['noturno']], file.path(wddata, 'lnv2.tif'), NAflag = 0,
+            datatype='FLT4S', overwrite=TRUE, format="GTiff")
+writeRaster(rlden[['lden']], file.path(wddata, 'ldenv2.tif'), NAflag = 0,
+            datatype='FLT4S', overwrite=TRUE, format="GTiff")
